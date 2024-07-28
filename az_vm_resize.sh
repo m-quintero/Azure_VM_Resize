@@ -1,3 +1,5 @@
+MOST RECENT UPDATE
+
 # Script Name: az_vm_resize.sh
 # Author: michael.quintero@rackspace.com
 # Description: This script will resize an Azure (VM). It can create a manual backup before resizing, verify the desired size is valid, check for ongoing backup operations, & provide a final confirmation prior to the resize operation.
@@ -11,6 +13,13 @@ prompt() {
     eval $input_variable_name="'$input_value'"
 }
 
+# Function to handle long-running Azure operations
+wait_for_long_running_operation() {
+    local operation_id="$1"
+    az rest --method get --uri "$operation_id" | grep '"status": "InProgress"' && sleep 10 && wait_for_long_running_operation "$operation_id"
+}
+
+# Prompt the user for necessary inputs
 prompt "Enter your Azure subscription ID" subscription_id
 prompt "Enter the resource group name" resource_group
 prompt "Enter the VM name" vm_name
@@ -27,13 +36,22 @@ get_available_sizes() {
     az vm list-sizes --location $(az vm show --resource-group "$resource_group" --name "$vm_name" --query "location" -o tsv) --query "[].name" -o tsv
 }
 
+# Added as a check to ensuire that the disks are compatible with the sizing
+is_resize_allowed() {
+    local current_size="$1"
+    local new_size="$2"
+    local current_resource_disk=$(az vm list-sizes --location $(az vm show --resource-group "$resource_group" --name "$vm_name" --query "location" -o tsv) --query "[?name=='$current_size'].resourceDiskSizeInMB" -o tsv)
+    local new_resource_disk=$(az vm list-sizes --location $(az vm show --resource-group "$resource_group" --name "$vm_name" --query "location" -o tsv) --query "[?name=='$new_size'].resourceDiskSizeInMB" -o tsv)
+    [ "$current_resource_disk" == "$new_resource_disk" ]
+}
+
 # Grab backup vault and backup policy names. Still a work in progress as I'm ironing out kinks
 get_backup_info() {
     local resource_group="$1"
     local vm_name="$2"
     local vm_id=$(az vm show --resource-group "$resource_group" --name "$vm_name" --query "id" -o tsv)
-    local backup_vault=$(az backup vault list --query "[?contains(protectedItems, '$vm_id')].name" -o tsv)
-    local backup_policy=$(az backup policy list --vault-name "$backup_vault" --query "[?contains(protectedItems, '$vm_id')].name" -o tsv)
+    local backup_vault=$(az backup vault list --resource-group "$resource_group" --query "[?contains(properties.protectedItems, '$vm_id')].name" -o tsv)
+    local backup_policy=$(az backup policy list --vault-name "$backup_vault" --query "[?contains(properties.protectedItems, '$vm_id')].name" -o tsv)
     echo "$backup_vault,$backup_policy"
 }
 
@@ -42,7 +60,7 @@ is_backup_in_progress() {
     local resource_group="$1"
     local backup_vault="$2"
     local vm_name="$3"
-    local backup_jobs=$(az backup job list --resource-group "$resource_group" --vault-name "$backup_vault" --query "[?contains(backupManagementType, 'AzureIaasVM') && contains(entityFriendlyName, '$vm_name') && (contains(status, 'InProgress') || contains(status, 'TransferToVault'))]" -o tsv)
+    local backup_jobs=$(az backup job list --resource-group "$resource_group" --vault-name "$backup_vault" --query "[?contains(properties.entityFriendlyName, '$vm_name') && (contains(properties.status, 'InProgress') || contains(properties.status, 'TransferToVault'))]" -o tsv)
     if [ -n "$backup_jobs" ]; then
         echo "true"
     else
@@ -66,6 +84,12 @@ else
     exit 1
 fi
 
+# Checking if resizing between the current & requested sizes is allowed
+if ! is_resize_allowed "$current_size" "$new_size"; then
+    echo "Error: Resizing from $current_size to $new_size is not allowed due to resource disk incompatibility."
+    exit 1
+fi
+
 prompt "Do you want to create a manual backup before resizing? (yes/no)" create_backup
 
 if [ "$create_backup" == "yes" ]; then
@@ -76,6 +100,7 @@ if [ "$create_backup" == "yes" ]; then
         exit 1
     fi
 
+    # If the user selected to do so, we'll proceed with backup creation
     backup_name="${vm_name}-backup-$(date +%Y%m%d%H%M%S)"
     echo "Creating manual backup with name $backup_name..."
     az backup protection backup-now --resource-group "$resource_group" --vault-name "$backup_vault" --item-name "$vm_name" --backup-management-type AzureIaasVM --policy-name "$backup_policy" --retain-until $(date -d "+30 days" +%Y-%m-%d) --name "$backup_name"
@@ -105,7 +130,12 @@ az vm deallocate --resource-group "$resource_group" --name "$vm_name"
 echo "VM stopped."
 
 echo "Resizing the VM to $new_size..."
-az vm resize --resource-group "$resource_group" --name "$vm_name" --size "$new_size"
+resize_operation=$(az vm resize --resource-group "$resource_group" --name "$vm_name" --size "$new_size" --query "properties.provisioningState" -o tsv)
+
+if [ "$resize_operation" != "Succeeded" ]; then
+    echo "Error: Resize operation failed."
+    exit 1
+fi
 echo "VM resized."
 
 echo "Starting the VM..."
