@@ -1,0 +1,31 @@
+# Ensure that the following software and tools are installed:
+
+1. Azure CLI: Install Azure CLI from https://docs.microsoft.com/en-us/cli/azure/install-azure-cli
+2. Bash Shell: Ensure you have a Bash shell environment (available on Linux, macOS, and Windows with WSL)
+
+# Ensure you have the following permissions:
+
+1. Azure account with permissions to manage virtual machines and backup resources.
+2. Permissions to execute `az account set`, `az vm show`, `az vm list-sizes`, `az backup vault list`, `az backup policy list`, `az backup job list`, `az vm deallocate`, `az vm resize`, and `az vm start` commands.
+
+# Steps to install Azure CLI on different platforms:
+
+# On Windows:
+# Download and install from the link: https://aka.ms/installazurecliwindows
+
+# On macOS:
+# Use Homebrew to install Azure CLI
+brew update && brew install azure-cli
+
+# On Linux:
+# Use the package manager of your distribution to install Azure CLI
+curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+
+# Log in to Azure using the CLI:
+az login
+
+# Ensure the Azure CLI is logged in and has the necessary permissions to manage resources:
+az account set --subscription YOUR_SUBSCRIPTION_ID
+
+# Verify installation by running:
+az --version
